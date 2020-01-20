@@ -7,17 +7,17 @@ from functools import partial
 from math import floor
 from layers.transformer import transformer
 from layers.optimize import CustomSchedule, loss_function
-from layers.preprocessing import tokenize_and_filter, parse_json_line_skills
+from layers.preprocessing import tokenize_and_filter
 
 lang_1 = 'en'
 lang_2 = 'fr'
 parent_dir = join('data', "{}-{}".format(lang_1, lang_2))
-file_names = ["Europarl", "jobs", "skills", "EUbookshop", "Opensub"]
-EVAL_FOLDER = '/home/cviricel/365talents-evaluation'
-
+file_names = ["Europarl", "EUbookshop"]
+LIMIT = 10E6
+SAVE_NAME = "test-{}-{}".format(lang_1, lang_2)
 MAX_LENGTH = 40
 
-EPOCHS = 20
+EPOCHS = 10
 BUFFER_SIZE = 20000
 BATCH_SIZE = 256
 
@@ -26,12 +26,28 @@ D_MODEL = 256
 NUM_HEADS = 8
 UNITS = 512
 DROPOUT = 0.1
-EPOCHS = 2
+
+FROM_LAST_CHECKPOINT = ""
 
 print("Building datasets...")
 data_sets_1 = []
 data_sets_2 = []
 for file in file_names:
+    if not os.path.exist(join(parent_dir, '{}.{}'.format(file, lang_1))):
+        print("Downloading data...")
+        os.makedirs('data')
+        # Should pdo that though opus python pkg...
+        os.system("opus_read -d {} -s {} -t {} -S 1 -T 1 -w {}/{}.{} data/{}.{} -wm moses -m {} -v".format(file,
+                                                                                                           lang_1,
+                                                                                                           lang_2,
+                                                                                                           parent_dir,
+                                                                                                           file,
+                                                                                                           lang_1,
+                                                                                                           parent_dir,
+                                                                                                           file,
+                                                                                                           lang_2,
+                                                                                                           LIMIT))
+
     data_1 = tf.data.TextLineDataset(join(parent_dir, '{}.{}'.format(file, lang_1)))
     data_sets_1.append(data_1)
     data_2 = tf.data.TextLineDataset(join(parent_dir, '{}.{}'.format(file, lang_2)))
@@ -45,35 +61,17 @@ for d_1, d_2 in zip(data_sets_1[1:], data_sets_2[1:]):
 
 print("End.")
 print("Building Tokenizers...")
-tokenizer_1 = tfds.features.text.SubwordTextEncoder.build_from_corpus(
-    (i.numpy() for i in all_data_sets_1), target_vocab_size=2**16)
-tokenizer_1.save_to_file("tokenizers/tokenizer_{}".format(lang_1))
+if not os.paath.exists("tokenizers/tokenizer_{}".format(lang_1)):
+    tokenizer_1 = tfds.features.text.SubwordTextEncoder.build_from_corpus(
+        (i.numpy() for i in all_data_sets_1), target_vocab_size=2**16)
+    tokenizer_1.save_to_file("tokenizers/tokenizer_{}".format(lang_1))
 
-tokenizer_2 = tfds.features.text.SubwordTextEncoder.build_from_corpus(
-    (i.numpy() for i in all_data_sets_2), target_vocab_size=2**16)
-tokenizer_2.save_to_file("tokenizers/tokenizer_{}".format(lang_2))
-
-#tokenizer_1 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_1))
-#tokenizer_2 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_2))
-print("End.")
-print("Building Eval Dataset...")
-eval_inputs, eval_outputs = parse_json_line_skills(EVAL_FOLDER, lang_1, lang_2)
-eval_inputs, eval_outputs = tokenize_and_filter(
-    eval_inputs,
-    eval_outputs,
-    tokenizer_1,
-    tokenizer_2,
-    MAX_LENGTH
-)
-eval_dataset = tf.data.Dataset.from_tensor_slices((
-    {
-        'inputs': eval_inputs,
-        'dec_inputs': eval_outputs[:, :-1]
-    },
-    {
-        'outputs': eval_outputs[:, 1:]
-    },
-))
+    tokenizer_2 = tfds.features.text.SubwordTextEncoder.build_from_corpus(
+        (i.numpy() for i in all_data_sets_2), target_vocab_size=2**16)
+    tokenizer_2.save_to_file("tokenizers/tokenizer_{}".format(lang_2))
+else:
+    tokenizer_1 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_1))
+    tokenizer_2 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_2))
 print("End.")
 
 
@@ -137,7 +135,7 @@ model = transformer(
     dropout=DROPOUT
 )
 
-model_save_path = join("checkpoints", "train-4-{}-{}".format(lang_1, lang_2))
+model_save_path = join("checkpoints", SAVE_NAME.format(lang_1, lang_2))
 if not os.path.exists(model_save_path):
     os.makedirs(model_save_path)
 
@@ -146,7 +144,7 @@ model_callbacks = [
                                                      "epoch-{epoch:02d}-{sparse_categorical_accuracy:.2f}"),
                                        monitor='sparse_categorical_accuracy',
                                        save_weights_only=True,
-                                       save_freq=1,
+                                       save_freq='epoch',
                                        verbose=0)
 ]
 
@@ -156,14 +154,16 @@ optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, eps
 ckpt = tf.train.Checkpoint(transformer=model,
                            optimizer=optimizer)
 
+if FROM_LAST_CHECKPOINT:
+    model.load_weights(tf.train.latest_checkpoint(FROM_LAST_CHECKPOINT))
+
 model.compile(optimizer=optimizer, loss=loss_function, metrics=['sparse_categorical_accuracy'])
 model.fit(
     train_dataset,
-    validation_data=eval_dataset,
     epochs=EPOCHS,
     callbacks=model_callbacks,
     use_multiprocessing=True,
     workers=32
 )
 
-ckpt.save("checkpoints/train-3-{}-{}/transformer_nmt_whole".format(lang_1, lang_2))
+ckpt.save(join(model_save_path, "transformer_nmt_whole"))
