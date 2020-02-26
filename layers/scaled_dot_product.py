@@ -11,6 +11,6 @@ def scaled_dot_product_attention(query, key, value, mask):
     if mask is not None:
         logits += (mask * -1e9)
 
-    attention_weights = tf.nn.softmax(logits, axis=-1)
+    attention_weights = tf.nn.softmax(logits, axis=-1, name="attention_weights")
 
-    return tf.matmul(attention_weights, value)
+    return tf.matmul(attention_weights, value), attention_weights

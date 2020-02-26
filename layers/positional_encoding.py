@@ -15,7 +15,7 @@ class PositionalEncoding(tf.keras.layers.Layer):
         return config
 
     def get_angles(self, position, i, d_model):
-        angles = 1 / tf.pow(10000, (2 * (i // 2)) / tf.cast(d_model, tf.float32))
+        angles = 1 / tf.pow(10000., (2 * (i // 2)) / tf.cast(d_model, tf.float32))
         return position * angles
 
     def positional_encoding(self, position, d_model):

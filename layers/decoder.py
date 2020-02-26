@@ -3,75 +3,79 @@ from .multi_head_attention import MultiHeadAttention
 from .positional_encoding import PositionalEncoding
 
 
-def decoder_layer(units, d_model, num_heads, dropout, name="decoder_layer"):
-    inputs = tf.keras.Input(shape=(None, d_model), name="inputs")
-    enc_outputs = tf.keras.Input(shape=(None, d_model), name="encoder_outputs")
-    look_ahead_mask = tf.keras.Input(
-        shape=(1, None, None), name="look_ahead_mask")
-    padding_mask = tf.keras.Input(shape=(1, 1, None), name='padding_mask')
+class Decoder_layer(tf.keras.layers.Layer):
+    def __init__(self, units, d_model, num_heads, dropout, name="decoder_layer"):
+        super(Decoder_layer, self).__init__(name=name)
+        self.dropout = dropout
+        self.units = units
+        self.d_model = d_model
+        self.num_heads = num_heads
 
-    attention1 = MultiHeadAttention(
-        d_model, num_heads, name="attention_1")(inputs={
-            'query': inputs,
-            'key': inputs,
-            'value': inputs,
-            'mask': look_ahead_mask
-        })
-    attention1 = tf.keras.layers.LayerNormalization(
-        epsilon=1e-6)(attention1 + inputs)
+        self.mha_1 = MultiHeadAttention(d_model, num_heads, name="self_attention")
+        self.mha_2 = MultiHeadAttention(d_model, num_heads, name="input_output_attention")
 
-    attention2 = MultiHeadAttention(
-        d_model, num_heads, name="attention_2")(inputs={
-            'query': attention1,
-            'key': enc_outputs,
-            'value': enc_outputs,
-            'mask': padding_mask
-        })
-    attention2 = tf.keras.layers.Dropout(rate=dropout)(attention2)
-    attention2 = tf.keras.layers.LayerNormalization(
-        epsilon=1e-6)(attention2 + attention1)
+        self.norm_1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.norm_2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.norm_3 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
 
-    outputs = tf.keras.layers.Dense(units=units, activation='relu')(attention2)
-    outputs = tf.keras.layers.Dense(units=d_model)(outputs)
-    outputs = tf.keras.layers.Dropout(rate=dropout)(outputs)
-    outputs = tf.keras.layers.LayerNormalization(
-        epsilon=1e-6)(outputs + attention2)
+        self.drop_1 = tf.keras.layers.Dropout(rate=dropout)
+        self.drop_2 = tf.keras.layers.Dropout(rate=dropout)
+        self.drop_3 = tf.keras.layers.Dropout(rate=dropout)
 
-    return tf.keras.Model(
-        inputs=[inputs, enc_outputs, look_ahead_mask, padding_mask],
-        outputs=outputs,
-        name=name)
+        self.dense_relu = tf.keras.layers.Dense(units=units, activation='relu')
+        self.dense = tf.keras.layers.Dense(units=d_model)
+
+    def call(self, dec_inputs, enc_outputs, look_ahead_mask, dec_padding_mask):
+        # enc_output.shape == (batch_size, input_seq_len, d_model)
+        attention1, attention_weights_1 = self.mha_1(dec_inputs, dec_inputs, dec_inputs, look_ahead_mask)
+        attention1 = self.drop_1(attention1)
+        attention1 = self.norm_1(attention1 + dec_inputs)
+
+        attention2, attention_weights_2 = self.mha_2(attention1, enc_outputs, enc_outputs, dec_padding_mask)
+        attention2 = self.drop_2(attention2)
+        attention2 = self.norm_2(attention2 + attention1)
+
+        outputs = self.dense_relu(attention2)
+        outputs = self.dense(outputs)
+        outputs = self.drop_3(outputs)
+        outputs = self.norm_3(outputs + attention2)
+
+        return outputs, attention_weights_1, attention_weights_2
 
 
-def decoder(vocab_size,
-            num_layers,
-            units,
-            d_model,
-            num_heads,
-            dropout,
-            name='decoder'):
-    inputs = tf.keras.Input(shape=(None,), name='inputs')
-    enc_outputs = tf.keras.Input(shape=(None, d_model), name='encoder_outputs')
-    look_ahead_mask = tf.keras.Input(
-        shape=(1, None, None), name='look_ahead_mask')
-    padding_mask = tf.keras.Input(shape=(1, 1, None), name='padding_mask')
+class Decoder(tf.keras.layers.Layer):
+    def __init__(self, vocab_size, num_layers, units, d_model, num_heads, dropout, name="decoder"):
+        super(Decoder, self).__init__(name=name)
+        self.vocab_size = vocab_size
+        self.num_layers = num_layers
+        self.units = units
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.emb = tf.keras.layers.Embedding(vocab_size, d_model)
+        self.pos_encoding = PositionalEncoding(vocab_size, d_model)
+        self.drop = tf.keras.layers.Dropout(rate=dropout)
+        self.decoder_layers = []
+        for i in range(num_layers):
+            self.decoder_layers.append(
+                Decoder_layer(
+                    units=self.units,
+                    d_model=self.d_model,
+                    num_heads=self.num_heads,
+                    dropout=self.dropout,
+                    name="decoder_layer_{}".format(i),
+                )
+            )
 
-    embeddings = tf.keras.layers.Embedding(vocab_size, d_model)(inputs)
-    embeddings *= tf.math.sqrt(tf.cast(d_model, tf.float32))
-    embeddings = PositionalEncoding(vocab_size, d_model)(embeddings)
+    def call(self, inputs, enc_outputs, look_ahead_mask, padding_mask):
+        embeddings = self.emb(inputs)
+        embeddings *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
+        embeddings = self.pos_encoding(embeddings)
 
-    outputs = tf.keras.layers.Dropout(rate=dropout)(embeddings)
-
-    for i in range(num_layers):
-        outputs = decoder_layer(
-            units=units,
-            d_model=d_model,
-            num_heads=num_heads,
-            dropout=dropout,
-            name='decoder_layer_{}'.format(i),
-        )(inputs=[outputs, enc_outputs, look_ahead_mask, padding_mask])
-
-    return tf.keras.Model(
-        inputs=[inputs, enc_outputs, look_ahead_mask, padding_mask],
-        outputs=outputs,
-        name=name)
+        outputs = self.drop(embeddings)
+        decoder_attention_weights_layers = []
+        for i in range(self.num_layers):
+            outputs, attention_weights_1, attention_weights_2 = self.decoder_layers[i](
+                outputs, enc_outputs, look_ahead_mask, padding_mask)
+            decoder_attention_weights_layers.append({"block_1": attention_weights_1, "block_2": attention_weights_2})
+        return outputs, decoder_attention_weights_layers
