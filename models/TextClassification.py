@@ -21,8 +21,8 @@
 # SOFTWARE.
 
 import tensorflow as tf
-from layers.transformer import Transformer
-from layers.encoder import Encoder
+from ..layers.transformer import Transformer
+from ..layers.encoder import Encoder
 
 
 class EncoderTextClassification(tf.keras.Model):
