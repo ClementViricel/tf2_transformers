@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 import tensorflow as tf
-from layers.transformer import Transformer
+from ..layers.transformer import Transformer
 
 
 class TransformerNMT(tf.keras.Model):
