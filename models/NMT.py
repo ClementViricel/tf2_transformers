@@ -1,17 +1,17 @@
 # MIT License
-# 
+#
 # Copyright (c) 2020 Clement Viricel
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -45,9 +45,11 @@ class TransformerNMT(tf.keras.Model):
                                        name="transformer")
         self.dense = tf.keras.layers.Dense(units=output_vocab_size, name="outputs")
 
-    def call(self, inputs, dec_inputs):
+    def call(self, inputs, get_attention=False):
+        enc_inputs = inputs[0]
+        dec_inputs = inputs[1]
         dec_outputs, encoder_attention_weights_layers, decoder_attention_weights_layers = self.transformer(
-            inputs, dec_inputs)
+            enc_inputs, dec_inputs)
         outputs = self.dense(dec_outputs)
         if get_attention:
             return outputs, encoder_attention_weights_layers, decoder_attention_weights_layers
