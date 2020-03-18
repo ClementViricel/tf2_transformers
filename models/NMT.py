@@ -45,9 +45,11 @@ class TransformerNMT(tf.keras.Model):
                                        name="transformer")
         self.dense = tf.keras.layers.Dense(units=output_vocab_size, name="outputs")
 
-    def call(self, inputs, dec_inputs):
+    def call(self, inputs, get_attention=False):
+        enc_inputs = inputs[0]
+        dec_inputs = inputs[1]
         dec_outputs, encoder_attention_weights_layers, decoder_attention_weights_layers = self.transformer(
-            inputs, dec_inputs)
+            enc_inputs, dec_inputs)
         outputs = self.dense(dec_outputs)
         if get_attention:
             return outputs, encoder_attention_weights_layers, decoder_attention_weights_layers
