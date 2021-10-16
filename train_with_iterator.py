@@ -20,28 +20,27 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import time
 import os
+from pathlib import Path
 from os.path import join
 import tensorflow as tf
-import tensorflow_datasets as tfds
-from functools import partial
-from math import floor
-from layers.transformer import transformer
+import tensorflow_hub as hub
+from models.NMT import TransformerNMT
 from layers.optimize import CustomSchedule, loss_function
-from layers.preprocessing import tokenize_and_filter
+
+from transformers import AutoTokenizer
 
 lang_1 = 'en'
 lang_2 = 'fr'
 parent_dir = join('data', "{}-{}".format(lang_1, lang_2))
 file_names = ["Europarl", "EUbookshop"]
-LIMIT = 10E6
+LIMIT = int(10E6)
 SAVE_NAME = "test-{}-{}".format(lang_1, lang_2)
 MAX_LENGTH = 40
 
 EPOCHS = 10
-BUFFER_SIZE = 20000
-BATCH_SIZE = 256
+BUFFER_SIZE = 640
+BATCH_SIZE = 64
 
 NUM_LAYERS = 1
 D_MODEL = 256
@@ -55,24 +54,15 @@ print("Building datasets...")
 data_sets_1 = []
 data_sets_2 = []
 for file in file_names:
-    if not os.path.exist(join(parent_dir, '{}.{}'.format(file, lang_1))):
+    if not Path(Path(parent_dir) / f'{file}.{lang_1}').exists():
         print("Downloading data...")
-        os.makedirs('data')
+        Path(parent_dir).mkdir(parents=True, exist_ok=True)
         # Should pdo that though opus python pkg...
-        os.system("opus_read -d {} -s {} -t {} -S 1 -T 1 -w {}/{}.{} data/{}.{} -wm moses -m {} -v".format(file,
-                                                                                                           lang_1,
-                                                                                                           lang_2,
-                                                                                                           parent_dir,
-                                                                                                           file,
-                                                                                                           lang_1,
-                                                                                                           parent_dir,
-                                                                                                           file,
-                                                                                                           lang_2,
-                                                                                                           LIMIT))
+        os.system(f"opus_read -d {file} -s {lang_1} -t {lang_2} -S 1 -T 1 -w {parent_dir}/{file}.{lang_1} {parent_dir}/{file}.{lang_2} -wm moses -m {LIMIT} -v")
 
-    data_1 = tf.data.TextLineDataset(join(parent_dir, '{}.{}'.format(file, lang_1)))
+    data_1 = tf.data.TextLineDataset(join(parent_dir, f'{file}.{lang_1}'))
     data_sets_1.append(data_1)
-    data_2 = tf.data.TextLineDataset(join(parent_dir, '{}.{}'.format(file, lang_2)))
+    data_2 = tf.data.TextLineDataset(join(parent_dir, f'{file}.{lang_2}'))
     data_sets_2.append(data_2)
 
 all_data_sets_1 = data_sets_1[0]
@@ -82,74 +72,20 @@ for d_1, d_2 in zip(data_sets_1[1:], data_sets_2[1:]):
     all_data_sets_2 = all_data_sets_2.concatenate(d_2)
 
 print("End.")
-print("Building Tokenizers...")
-if not os.paath.exists("tokenizers/tokenizer_{}".format(lang_1)):
-    tokenizer_1 = tfds.features.text.SubwordTextEncoder.build_from_corpus(
-        (i.numpy() for i in all_data_sets_1), target_vocab_size=2**16)
-    tokenizer_1.save_to_file("tokenizers/tokenizer_{}".format(lang_1))
-
-    tokenizer_2 = tfds.features.text.SubwordTextEncoder.build_from_corpus(
-        (i.numpy() for i in all_data_sets_2), target_vocab_size=2**16)
-    tokenizer_2.save_to_file("tokenizers/tokenizer_{}".format(lang_2))
-else:
-    tokenizer_1 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_1))
-    tokenizer_2 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_2))
-print("End.")
-
-
-def spend_time(start):
-    delta_secs = int(time.time() - start)
-    if delta_secs < 60:
-        return "{}s".format(delta_secs)
-    elif delta_secs < 60 * 60:
-        delta_mins = floor(delta_secs / 60)
-        delta_secs = delta_secs % 60
-        return "{}m{}s".format(delta_mins, delta_secs)
-    elif delta_secs < 60 * 60 * 24:
-        delta_hours = floor(delta_secs / (60 * 60))
-        delta_secs = delta_secs % (60 * 60)
-        delta_mins = floor(delta_secs / 60)
-        delta_secs = delta_secs % 60
-        return "{}h{}m{}s".format(delta_hours, delta_mins, delta_secs)
-
-
-def encode(lang1, lang2):
-    lang1 = [tokenizer_1.vocab_size] + tokenizer_1.encode(
-        lang1.numpy()) + [tokenizer_1.vocab_size+1]
-
-    lang2 = [tokenizer_2.vocab_size] + tokenizer_2.encode(
-        lang2.numpy()) + [tokenizer_2.vocab_size+1]
-
-    return lang1, lang2
-
-
-def filter_max_length(x, y, max_length=MAX_LENGTH):
-    return tf.logical_and(tf.size(x) <= max_length,
-                          tf.size(y) <= max_length)
-
-
-def tf_encode(lang_1, lang_2):
-    return tf.py_function(encode, [lang_1, lang_2], Tout=[tf.int64, tf.int64])
-
 
 def split_target(x, y):
-    return (x, y[:, :-1]), y[:, 1:]
-
+    return (x, y), y
 
 print("Preprocessing datasets...")
 train_dataset = tf.data.Dataset.zip((all_data_sets_1, all_data_sets_2))
-train_dataset = train_dataset.map(tf_encode)
-train_dataset = train_dataset.filter(filter_max_length)
 train_dataset = train_dataset.cache()
 train_dataset = train_dataset.shuffle(BUFFER_SIZE)
-train_dataset = train_dataset.padded_batch(BATCH_SIZE, padded_shapes=([-1], [-1]), drop_remainder=True)
+train_dataset = train_dataset.batch(BATCH_SIZE)
 train_dataset = train_dataset.map(split_target)
 train_dataset = train_dataset.prefetch(tf.data.experimental.AUTOTUNE)
 print("End.")
 
-model = transformer(
-    input_vocab_size=tokenizer_1.vocab_size + 2,
-    output_vocab_size=tokenizer_2.vocab_size + 2,
+model = TransformerNMT(
     num_layers=NUM_LAYERS,
     units=UNITS,
     d_model=D_MODEL,
@@ -158,8 +94,7 @@ model = transformer(
 )
 
 model_save_path = join("checkpoints", SAVE_NAME.format(lang_1, lang_2))
-if not os.path.exists(model_save_path):
-    os.makedirs(model_save_path)
+Path(model_save_path).mkdir(parents=True, exist_ok=True)
 
 model_callbacks = [
     tf.keras.callbacks.ModelCheckpoint(filepath=join(model_save_path,

@@ -20,17 +20,17 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import time
 import os
 import pickle
+import numpy as np
+from pathlib import Path
 from os.path import join
 import tensorflow as tf
-import tensorflow_datasets as tfds
-from functools import partial
-from math import floor
-from layers.transformer import transformer
+from models.NMT import TransformerNMT
 from layers.optimize import CustomSchedule, loss_function
 from layers.preprocessing import tokenize_and_filter
+
+from transformers import AutoTokenizer
 
 lang_1 = 'en'
 lang_2 = 'fr'
@@ -41,8 +41,7 @@ SAVE_NAME = "test-{}-{}".format(lang_1, lang_2)
 MAX_LENGTH = 40
 
 EPOCHS = 10
-BUFFER_SIZE = 20000
-BATCH_SIZE = 256
+BATCH_SIZE = 32
 
 NUM_LAYERS = 1
 D_MODEL = 256
@@ -51,84 +50,64 @@ UNITS = 512
 DROPOUT = 0.1
 
 FROM_LAST_CHECKPOINT = ""
-
+tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-uncased")
 print("Building datasets...")
-inputs = []
-outputs = []
-for file in file_names:
-    if not os.path.exist(join(parent_dir, '{}.{}'.format(file, lang_1))):
-        print("Downloading data...")
-        os.makedirs('data')
-        # Should pdo that though opus python pkg...
-        os.system("opus_read -d {} -s {} -t {} -S 1 -T 1 -w {}/{}.{} data/{}.{} -wm moses -m {} -v".format(file,
-                                                                                                           lang_1,
-                                                                                                           lang_2,
-                                                                                                           parent_dir,
-                                                                                                           file,
-                                                                                                           lang_1,
-                                                                                                           parent_dir,
-                                                                                                           file,
-                                                                                                           lang_2,
-                                                                                                           LIMIT))
+if not Path("dataset.pickle").exists():
+    inputs = []
+    outputs = []
+    for file in file_names:
+        if not Path(Path(parent_dir) / f'{file}.{lang_1}').exists():
+            print("Downloading data...")
+            Path('data').mkdir(exist_ok=True)
+            # Should pdo that though opus python pkg...
+            os.system("opus_read -d {} -s {} -t {} -S 1 -T 1 -w {}/{}.{} data/{}.{} -wm moses -m {} -v".format(file,
+                                                                                                            lang_1,
+                                                                                                            lang_2,
+                                                                                                            parent_dir,
+                                                                                                            file,
+                                                                                                            lang_1,
+                                                                                                            parent_dir,
+                                                                                                            file,
+                                                                                                            lang_2,
+                                                                                                            LIMIT))
 
-    with open(join(parent_dir, '{}.{}'.format(file, lang_1)), 'r', encoding='utf-8') as in_file:
-        inputs.extend(in_file.read().splitlines())
-    with open(join(parent_dir, '{}.{}'.format(file, lang_2)), 'r', encoding='utf-8') as in_file:
-        outputs.extend(in_file.read().splitlines())
-print("Load {} training sentence pairs.".format(len(inputs)))
-
-print("Building Tokenizers...")
-if not os.paath.exists("tokenizers/tokenizer_{}".format(lang_1)):
-    os.makedirs("tokenizers")
-    tokenizer_1 = tfds.features.text.SubwordTextEncoder.build_from_corpus(inputs, target_vocab_size=2**16)
-    tokenizer_1.save_to_file("tokenizers/tokenizer_{}".format(lang_1))
-
-    tokenizer_2 = tfds.features.text.SubwordTextEncoder.build_from_corpus(outputs, target_vocab_size=2**16)
-    tokenizer_2.save_to_file("tokenizers/tokenizer_{}".format(lang_2))
-else:
-    tokenizer_1 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_1))
-    tokenizer_2 = tfds.features.text.SubwordTextEncoder.load_from_file("tokenizers/tokenizer_{}".format(lang_2))
-print("End.")
-
-if not os.path.exists("dataset.pickle"):
+        with open(join(parent_dir, f'{file}.{lang_1}'), 'r', encoding='utf-8') as in_file:
+            inputs.extend(in_file.read().splitlines())
+        with open(join(parent_dir, f'{file}.{lang_2}'), 'r', encoding='utf-8') as in_file:
+            outputs.extend(in_file.read().splitlines())
     print("Filtering datasets")
     inputs, outputs = tokenize_and_filter(
         inputs,
         outputs,
-        tokenizer_1,
-        tokenizer_2,
-        MAX_LENGTH
+        tokenizer,
+        tokenizer,
+        MAX_LENGTH,
+        BATCH_SIZE
     )
-    dataset = (
-        {
-            'inputs': inputs,
-            'dec_inputs': outputs[:, :-1]
-        },
-        {
-            'outputs': outputs[:, 1:]
-        },
-    )
+    dataset = {'inputs': inputs, 'outputs': outputs}
     assert(len(inputs) == len(outputs))
     with open('dataset.pickle', 'wb') as file_o:
         pickle.dump(dataset, file_o)
 else:
     with open('dataset.pickle', 'rb') as file_o:
         dataset = pickle.load(file_o)
+        inputs = dataset['inputs']
+        outputs = dataset['outputs']
 print("End.")
-
-model = transformer(
-    input_vocab_size=tokenizer_1.vocab_size + 2,
-    output_vocab_size=tokenizer_2.vocab_size + 2,
+print("Building model...")
+model = TransformerNMT(
     num_layers=NUM_LAYERS,
     units=UNITS,
     d_model=D_MODEL,
     num_heads=NUM_HEADS,
-    dropout=DROPOUT
+    dropout=DROPOUT,
+    use_tokenizer=False,
+    input_vocab_size=tokenizer.vocab_size,
+    output_vocab_size=tokenizer.vocab_size
 )
-
+print("End")
 model_save_path = join("checkpoints", SAVE_NAME.format(lang_1, lang_2))
-if not os.path.exists(model_save_path):
-    os.makedirs(model_save_path)
+Path(model_save_path).mkdir(exist_ok=True)
 
 model_callbacks = [
     tf.keras.callbacks.ModelCheckpoint(filepath=join(model_save_path,
@@ -147,16 +126,15 @@ ckpt = tf.train.Checkpoint(transformer=model,
                            optimizer=optimizer)
 
 model.compile(optimizer=optimizer, loss=loss_function, metrics=['sparse_categorical_accuracy'])
+print("Beggining training...")
 model.fit(
-    x=(inputs, outputs[:, :-1]),
-    y=outputs[:, 1:],
+    x=(np.array(inputs), np.array(outputs)),
+    y=np.array(outputs),
     batch_size=BATCH_SIZE,
     epochs=EPOCHS,
     validation_split=0.1,
     shuffle=True,
     callbacks=model_callbacks,
-    use_multiprocessing=True,
-    workers=32
 )
-
+print("End")
 ckpt.save(join(model_save_path, "transformer_nmt_whole"))
